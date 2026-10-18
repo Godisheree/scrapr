@@ -1,6 +1,6 @@
 /**
  * Name : OMDOWN Scraper (resolve 26+ platform -> info media + link download)
- * Owner : Zane
+ * Owner : Godhumanv2
  * Base Web : https://www.omdown.site (media downloader 26+ platform)
  * Type : Scraper
  * Function : resolve <link> -> info media + link download (mp4/mp3/gambar)
