@@ -27,3 +27,5 @@ Thumbs.db
 .env.*
 *.key
 *.pem
+# Tests lokal — nggak masuk repo
+/tests/
