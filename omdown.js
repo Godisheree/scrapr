@@ -390,7 +390,7 @@ async function main() {
 
 if (isMain) {
   main().catch((e) => {
-    process.stderr.write(`[!] ${e.message || e}\n`)
+    process.stderr.write(`error: ${e.message || e}\n`)
     process.exit(1)
   })
 }
