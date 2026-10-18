@@ -1,7 +1,7 @@
-# scrapr — kumpulan scraper JavaScript
+# AGENTS.md — kontrak untuk AI agent
 
-> **Untuk AI agent.** Repo ini dikerjakan oleh AI agent. Treat README ini sebagai
-> kontrak: kalau scraper baru nggak ikut aturan di bawah, itu belum selesai.
+> Repo ini dikerjakan oleh AI agent. File ini adalah kontrak: kalau scraper baru
+> nggak ikut aturan di bawah, itu belum selesai.
 
 1 folder = 1 scraper. 1 file = 1 scraper. JavaScript/Node.js. Tanpa dependency.
 
