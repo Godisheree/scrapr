@@ -1,0 +1,26 @@
+# Python scraper lama — bukan bagian dari koleksi JS ini
+xnxx/
+
+# Output download
+downloads/
+*.mp4
+*.mp3
+*.jpg
+*.png
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Env & credential — JANGAN pernah commit
+.env
+.env.*
+*.key
+*.pem
