@@ -27,17 +27,15 @@ const MAX_SIZE = 500_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Secret challenge: disusun dari char-code yang diambil dari bundle JS asli. */
 function secret() {
-  const l = [115, 110, 52, 112].map((c) => String.fromCharCode(c)).join(""); // "sn4p"
-  const s = [...  "s0j^"].map((c) => String.fromCharCode(c.charCodeAt(0) + 1)).join(""); // "t1k_"
-  const n = Buffer.from("djNyMQ==", "base64").toString("utf8"); // "v3r1"
+  const l = [115, 110, 52, 112].map((c) => String.fromCharCode(c)).join("");
+  const s = [...  "s0j^"].map((c) => String.fromCharCode(c.charCodeAt(0) + 1)).join("");
+  const n = Buffer.from("djNyMQ==", "base64").toString("utf8");
   const g = "fy20";
-  const d = [50, 54].map((c) => String.fromCharCode(c)).join(""); // "26"
+  const d = [50, 54].map((c) => String.fromCharCode(c)).join("");
   return l + s + n + g + d;
 }
 
-/** AES-256-CBC decrypt (key = SHA256(secret:id), IV = 16 byte pertama). */
 function decryptPayload(id, p) {
   const raw = Buffer.from(p, "base64");
   const iv = raw.subarray(0, 16);
@@ -48,7 +46,6 @@ function decryptPayload(id, p) {
   return pt.toString("utf8").replace(/\0+$/, "").trim();
 }
 
-/** Jawab challenge sesuai tipe yang dikirim server. */
 function evalChallenge(ch) {
   switch (ch.t) {
     case "b":
@@ -66,7 +63,6 @@ function evalChallenge(ch) {
   }
 }
 
-/** POST /api/token -> decrypt -> X-Verify: "id:hasil:_e:_h". */
 async function fetchVerify() {
   const r = await reqJson(`${SITE}${API_TOKEN}`, {
     method: "POST",
@@ -84,7 +80,6 @@ async function fetchVerify() {
   return `${r.json.id}:${evalChallenge(data)}:${e}:${h}`;
 }
 
-/** Validasi input: hanya izinkan domain TikTok/Douyin yang didukung. */
 function normalizeUrl(input) {
   const s = String(input).trim();
   if (!/^https?:\/\/(www\.|vm\.|vt\.)?tiktok\.com\//i.test(s) &&
@@ -94,7 +89,6 @@ function normalizeUrl(input) {
   return s;
 }
 
-/** GET /api/extract -> metadata + download URL. */
 async function extract(url, tries = 3) {
   const clean = normalizeUrl(url);
   let lastErr;
@@ -136,7 +130,6 @@ function toOutput(data) {
   };
 }
 
-/** Unduh file ke disk (streaming, ikut redirect). */
 async function downloadFile(url, dest) {
   const u = new URL(url);
   const lib = u.protocol === "http:" ? httpReq : httpsReq;
@@ -186,7 +179,6 @@ async function downloadFile(url, dest) {
   return dest;
 }
 
-/** HTTP native: GET/POST JSON, ikut redirect (max 5), batas ukuran response. */
 function req(url, { method = "GET", headers = {}, body, timeout = TIMEOUT, maxRedirect = 5 } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -248,9 +240,7 @@ async function reqJson(url, opts = {}) {
   let j = null;
   try {
     j = JSON.parse(r.body);
-  } catch {
-    /* not json */
-  }
+  } catch {}
   return { ...r, json: j };
 }
 

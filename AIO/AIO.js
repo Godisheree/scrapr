@@ -17,9 +17,6 @@ import { parseArgs } from "node:util";
 const SITE = "https://allindownload.com";
 const API_DOWNLOAD = "/api/download";
 const API_FILE = "/api/file";
-// WAJIB polos: endpoint TikTok di situs ini nolak UA browser (Chrome desktop
-// dan Safari iPhone sama-sama dibalas "TikTok video not found"). "Mozilla/5.0"
-// polos lolos, dan YouTube nerima UA apa pun. Jangan ganti ke UA lengkap.
 const UA = "Mozilla/5.0";
 const TIMEOUT = 30_000;
 const MAX_SIZE = 500_000;
@@ -35,7 +32,6 @@ const dec = (s) =>
     .replace(/&nbsp;/g, " ")
     .trim();
 
-/** HTTP native: GET/POST JSON, ikut redirect (max 5), timeout, cap ukuran respons. */
 function req(url, { method = "GET", headers = {}, body, timeout = TIMEOUT, maxRedirect = 5 } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -92,13 +88,10 @@ async function reqJson(url, opts = {}) {
   let j = null;
   try {
     j = JSON.parse(r.body);
-  } catch {
-    /* not json */
-  }
+  } catch {}
   return { ...r, json: j };
 }
 
-/** Bersihkan URL input: tambah https:// kalau kosong, tolak yang bukan http(s). */
 function normalizeUrl(input) {
   let s = String(input ?? "").trim();
   if (!s) throw new Error("URL kosong");
@@ -113,7 +106,6 @@ function normalizeUrl(input) {
   return u.toString();
 }
 
-/** Nama file aman dari judul. */
 function safeName(s) {
   return (
     (s || "video")
@@ -123,14 +115,6 @@ function safeName(s) {
   );
 }
 
-/**
- * GET /api/download -> metadata + daftar link.
- *
- * PENTING: endpoint TikTok di situs ini flaky. Link yang valid bisa dibalas
- * "TikTok video not found" lalu request berikutnya untuk link yang sama balas
- * ok:true. Jadi pesan "not found" itu BUKAN final — tetap retry.
- * Jeda antar percobaan sengaja dibuat detik-detik, jangan dipotong jadi burst.
- */
 async function fetchInfo(url, tries = 4, delay = 3000) {
   const clean = normalizeUrl(url);
   let lastErr;
@@ -152,7 +136,6 @@ async function fetchInfo(url, tries = 4, delay = 3000) {
   throw lastErr;
 }
 
-/** Ambil link sesuai --quality: pakai label persis, atau substring case-insensitive. */
 function pickLink(data, quality) {
   const links = Array.isArray(data.links) ? data.links.filter((l) => l && l.url) : [];
   if (!links.length) throw new Error("Tidak ada link download untuk link ini");
@@ -180,7 +163,6 @@ function toOutput(data, link) {
   };
 }
 
-/** Streaming download ke disk, ikut redirect (max 5), hard cap 500MB. */
 function fetchToFile(url, dest) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -241,7 +223,6 @@ function fetchToFile(url, dest) {
   });
 }
 
-/** Susun URL proxy /api/file (dipakai kalau flag --proxy). */
 function proxyUrl(linkUrl, platform, fileName) {
   const q = `url=${encodeURIComponent(linkUrl)}&name=${encodeURIComponent(fileName)}&ref=${encodeURIComponent(platform || "")}`;
   return `${SITE}${API_FILE}?${q}`;
@@ -316,8 +297,6 @@ async function main() {
       r = await fetchToFile(proxied(), `${base}${ext}`);
       via = "proxy";
     } else {
-      // TikTok (tikcdn.io) nolak TLS client Node — direct selalu gagal di sana,
-      // jadi jatuh ke /api/file kalau percobaan pertama error.
       try {
         r = await fetchToFile(link.url, `${base}${ext}`);
         via = "direct";
