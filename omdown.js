@@ -8,9 +8,9 @@
  * Note : error fix sendiri.
  */
 
-const { request: httpsReq } = require('node:https')
-const { parseArgs } = require('node:util')
-const { pathToFileURL } = require('node:url')
+import { request as httpsReq } from 'node:https'
+import { parseArgs } from 'node:util'
+import { pathToFileURL } from 'node:url'
 
 const BASE = 'https://www.omdown.site'
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -354,9 +354,93 @@ opsi:
 catatan: nol file ditulis ke disk — keluaran cuma JSON; link /api/media/stream?token=...
          signed & cepat kedaluwarsa, ambil ulang tiap mau dipakai.`
 
-const isMain = require.main === module
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false
+
+function toMedia(out) {
+  const list = Array.isArray(out.formats) ? out.formats : []
+  const media = list
+    .map((f) => {
+      const url = f.downloadUrl || f.url || null
+      if (!url || !/^https?:\/\//i.test(url)) return null
+      const audio = f.type === 'mp3' || f.type === 'audio' || /\.(mp3|m4a|opus|ogg)$/i.test(f.ext || url)
+      return { url, type: audio ? 'audio' : 'video', quality: f.quality || f.qualityNumber || f.name || null }
+    })
+    .filter(Boolean)
+  return media
+}
+
+function caption(user, out, media) {
+  return [
+    `╭━━━ *${user}*`,
+    '┃ *OMDOWN*',
+    '╰━━━━━━━━━━━━━',
+    '',
+    `▸ platform : ${out.platform || '-'}`,
+    `▸ title : ${out.title || '-'}`,
+    out.author ? `▸ author : ${out.author}` : null,
+    out.duration ? `▸ duration : ${out.duration}` : null,
+    media?.quality ? `▸ quality : ${media.quality}` : null,
+    `▸ format : ${media?.type || '-'}`,
+    '',
+    `> ${media?.length ? media.length + ' format tersedia' : ''} • scraper-bot-kit`,
+  ]
+    .filter((l) => l !== null && l !== '')
+    .join('\n')
+}
+
+const USAGE_BOT =
+  '╭━━━ *OMDOWN* ━━━╮\n\n▸ pakai: .omdown <link>\n▸ contoh: .omdown https://www.tiktok.com/@user/video/123\n\n> 26+ platform\n╰━━━━━━━━━━━━━━━'
+
+export default {
+  name: 'omdown',
+  command: ['omdown'],
+  alias: [],
+  category: ['scraper'],
+  description: 'resolve 26+ platform jadi link media',
+  usage: '<link>',
+  example: '.omdown <link>',
+  async run({ m, args, q }) {
+    const quotedText =
+      q?.text ||
+      q?.message?.conversation ||
+      q?.message?.extendedTextMessage?.text ||
+      q?.raw?.message?.conversation ||
+      q?.raw?.message?.extendedTextMessage?.text ||
+      ''
+    const candidate =
+      args.find((v) => /^https?:\/\//i.test(v)) || quotedText.match(/https?:\/\/\S+/i)?.[0]
+
+    if (!candidate) return m.reply(USAGE_BOT)
+
+    const sender = String(m.sender || '').split('@')[0]
+    await m.react('🕐').catch(() => {})
+
+    try {
+      const out = await resolve(candidate)
+      const media = toMedia(out)
+      const wantAudio = args.some((v) => String(v).toLowerCase() === 'audio')
+      const picked = wantAudio ? media.find((i) => i.type === 'audio') : media.find((i) => i.type === 'video')
+      const chosen = picked || media[0]
+      if (!chosen?.url) throw new Error('media tidak ditemukan')
+
+      await m.react('✅').catch(() => {})
+      if (chosen.type === 'audio') return m.sendAudio(chosen.url, { mimetype: 'audio/mpeg' })
+      if (chosen.type === 'image') return m.sendImage(chosen.url, caption(sender, out, chosen))
+      return m.sendVideo(chosen.url, caption(sender, out, chosen))
+    } catch (error) {
+      await m.react('❌').catch(() => {})
+      return m.reply(
+        `╭━━━ *OMDOWN* ━━━╮\n\n▸ gagal: ${error.message || 'tidak diketahui'}\n▸ cek link-nya, atau coba lagi nanti\n╰━━━━━━━━━━━━━━━`
+      )
+    }
+  },
+}
 
 async function main() {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    process.stdout.write(`${USAGE}\n`)
+    process.exit(0)
+  }
   const { values: v, positionals } = parseArgs({
     options: {
       platform: { type: 'string', default: '' },
@@ -369,9 +453,13 @@ async function main() {
   const log = v.quiet ? null : (m) => process.stderr.write(`[*] ${m}\n`)
   const [cmd, arg] = positionals
 
-  if (!cmd || cmd === 'help' || cmd === '--help') {
+  if (cmd === 'help' || cmd === '--help') {
     process.stdout.write(`${USAGE}\n`)
     process.exit(0)
+  }
+  if (!cmd) {
+    process.stderr.write(`${USAGE}\n`)
+    process.exit(1)
   }
   if (cmd === 'platforms') {
     process.stdout.write(`${JSON.stringify(PATTERNS.map(([, n]) => n), null, 2)}\n`)
@@ -395,4 +483,4 @@ if (isMain) {
   })
 }
 
-module.exports = { resolve, detect, PATTERNS }
+export { resolve, detect, PATTERNS, toMedia }

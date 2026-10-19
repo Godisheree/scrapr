@@ -9,12 +9,13 @@
  * Note : error fix sendiri.
  */
 
-const { request: httpsReq } = require('node:https')
-const { request: httpReq } = require('node:http')
-const { parseArgs } = require('node:util')
-const crypto = require('node:crypto')
-const fs = require('node:fs')
-const path = require('node:path')
+import { request as httpsReq } from 'node:https'
+import { request as httpReq } from 'node:http'
+import { parseArgs } from 'node:util'
+import { pathToFileURL } from 'node:url'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const SITE = 'https://lunara.softbotz.my.id'
 const API_UPLOAD = '/upload'
@@ -127,23 +128,20 @@ function readDetail(res) {
   return `server merespons status ${res.status}`
 }
 
-async function upload(filePath, { permanent = true, displayName, log } = {}) {
-  const abs = path.resolve(filePath)
-  if (!fs.existsSync(abs)) throw new Error(`file nggak ada: ${filePath}`)
-  const stat = fs.statSync(abs)
-  if (!stat.isFile()) throw new Error(`bukan file: ${filePath}`)
-  if (stat.size === 0) throw new Error('file kosong, server tolak')
-  if (stat.size > MAX_SIZE) {
-    throw new Error(`file ${(stat.size / 1000 / 1000).toFixed(1)} MB melebihi batas 100 MB`)
+export async function uploadBuffer(data, fileName = 'file.bin', opts = {}) {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
+  if (buf.length === 0) throw new Error('file kosong, server tolak')
+  if (buf.length > MAX_SIZE) {
+    throw new Error(`file ${(buf.length / 1000 / 1000).toFixed(1)} MB melebihi batas 100 MB`)
   }
-
-  const file = { name: path.basename(abs), data: fs.readFileSync(abs) }
+  const { permanent = true, displayName, log } = opts
+  const file = { name: path.basename(String(fileName || 'file.bin')), data: buf }
   const { body, contentType } = multipart(
     { permanent: permanent ? 'true' : 'false', filename: displayName },
     file
   )
 
-  log?.(`upload ${file.name} (${stat.size} byte)`)
+  log?.(`upload ${file.name} (${buf.length} byte)`)
   const res = await reqJson(`${SITE}${API_UPLOAD}`, {
     method: 'POST',
     headers: { ...NAV, 'Content-Type': contentType, Accept: 'application/json' },
@@ -166,6 +164,16 @@ async function upload(filePath, { permanent = true, displayName, log } = {}) {
     api: `${SITE}${API_UPLOAD}`,
   }
 }
+
+export async function upload(filePath, opts = {}) {
+  const abs = path.resolve(filePath)
+  if (!fs.existsSync(abs)) throw new Error(`file nggak ada: ${filePath}`)
+  const stat = fs.statSync(abs)
+  if (!stat.isFile()) throw new Error(`bukan file: ${filePath}`)
+  return uploadBuffer(fs.readFileSync(abs), path.basename(abs), opts)
+}
+
+export const resolve = uploadBuffer
 
 const USAGE = `pakai:
   node lunara.js upload <file>            -> JSON link berbagi
@@ -190,7 +198,75 @@ catatan:
   - Nol file ditulis ke disk; output cuma JSON. Link hasil upload emang
     publik dan bisa dihapus dari sisi server kapan aja.`
 
-const isMain = require.main === module
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false
+
+function pickMessageMedia(message) {
+  const candidates = [
+    ['documentMessage', 'document'],
+    ['videoMessage', 'video'],
+    ['imageMessage', 'image'],
+    ['audioMessage', 'audio'],
+    ['stickerMessage', 'sticker'],
+  ]
+  for (const [key, type] of candidates) {
+    if (message?.[key]) return { type, node: message[key] }
+  }
+  return null
+}
+
+function caption(user, out, fileName) {
+  return [
+    `╭━━━ *${user}*`,
+    '┃ *LUNARA*',
+    '╰━━━━━━━━━━━━━',
+    '',
+    `▸ file : ${fileName}`,
+    `▸ size : ${out.size ?? '?'} byte`,
+    out.permanent ? '▸ tipe : permanen' : '▸ tipe : sementara',
+    '',
+    out.url,
+    '',
+    `▸ mentah: ${out.rawUrl}`,
+    '',
+    '> powered by scraper-bot-kit',
+  ].join('\n')
+}
+
+const USAGE_BOT =
+  '╭━━━ *LUNARA* ━━━╮\n\n▸ kirim file (dokumen/foto/video/audio), lalu balas dengan .lunara\n▸ atau .lunara reply\n\n▸ batas 100 MB\n╰━━━━━━━━━━━━━━'
+
+export default {
+  name: 'lunara',
+  command: ['lunara'],
+  alias: ['lunarafile'],
+  category: ['scraper'],
+  description: 'upload file ke lunara dan balas link berbagi',
+  usage: '<reply file>',
+  example: '.lunara (reply sebuah file)',
+  async run({ m, q }) {
+    const sender = String(m.sender || '').split('@')[0]
+    const source = q?.raw || q
+    const found = pickMessageMedia(source)
+
+    if (!found) return m.reply(USAGE_BOT)
+
+    await m.react('🕐').catch(() => {})
+    try {
+      const { downloadContentFromMessage } = await import('baileys')
+      const stream = await downloadContentFromMessage(found.node, found.type)
+      const chunks = []
+      for await (const chunk of stream) chunks.push(chunk)
+      const buffer = Buffer.concat(chunks)
+
+      const out = await uploadBuffer(buffer, found.node?.fileName || `file-${Date.now()}.bin`)
+      await m.react('✅').catch(() => {})
+      return m.reply(caption(sender, out, found.node?.fileName || 'file.bin'))
+    } catch (error) {
+      await m.react('❌').catch(() => {})
+      return m.reply(`╭━━━ *LUNARA* ━━━╮\n\n▸ gagal: ${error.message || 'tidak diketahui'}\n╰━━━━━━━━━━━━━━━`)
+    }
+  },
+}
 
 async function main() {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
@@ -237,4 +313,4 @@ if (isMain) {
   })
 }
 
-module.exports = { upload, multipart, req, reqJson }
+export { multipart, req, reqJson }

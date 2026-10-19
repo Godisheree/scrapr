@@ -13,6 +13,7 @@ import { request as httpReq } from "node:http";
 import { request as httpsReq } from "node:https";
 import { writeFile, mkdir } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { pathToFileURL } from "node:url";
 
 const SITE = "https://allindownload.com";
 const API_DOWNLOAD = "/api/download";
@@ -254,6 +255,105 @@ Catatan:
   - Output JSON ke stdout, error ke stderr.`;
 }
 
+export async function resolve(rawUrl, opts = {}) {
+  const data = await fetchInfo(rawUrl);
+  const link = pickLink(data, opts.quality);
+  const title = dec(data.title) || "Media";
+  const author = dec(data.author) || "";
+  const media = (data.links || [])
+    .filter((l) => l && l.url)
+    .map((l) => {
+      const audio = /mp3|m4a|opus|audio/i.test(`${l.ext || ""} ${l.label || ""}`);
+      return {
+        url: l.url,
+        type: audio ? "audio" : "video",
+        quality: l.label || null,
+      };
+    });
+
+  return {
+    platform: data.platform,
+    title,
+    author,
+    thumbnail: data.cover || null,
+    media,
+    result: {
+      title,
+      author,
+      thumbnail: data.cover || null,
+      url: link.url,
+      type: /\.(mp3|m4a|opus|ogg)$/i.test(link.ext || "") ? "audio" : "video",
+      quality: link.label || null,
+      formats: media,
+    },
+  };
+}
+
+function caption(user, r, media) {
+  return [
+    `╭━━━ *${user}*`,
+    "┃ *AIO DOWNLOADER*",
+    "╰━━━━━━━━━━━━━━━",
+    "",
+    `▸ platform : ${r.platform || "-"}`,
+    `▸ title : ${r.title || "-"}`,
+    r.author ? `▸ author : ${r.author}` : null,
+    media?.quality ? `▸ quality : ${media.quality}` : null,
+    "",
+    "> powered by scraper-bot-kit",
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
+}
+
+const USAGE_BOT =
+  "╭━━━ *AIO DOWNLOADER* ━━━╮\n\n▸ pakai: .aio <link>\n▸ contoh: .aio https://vm.tiktok.com/ZMxxxx/\n\n> tiktok + youtube\n╰━━━━━━━━━━━━━━━";
+
+export default {
+  name: "aio",
+  command: ["aio"],
+  alias: [],
+  category: ["scraper"],
+  description: "ambil media dari tiktok dan youtube",
+  usage: "<link>",
+  example: ".aio <link>",
+  async run({ m, args, q }) {
+    const quotedText =
+      q?.text ||
+      q?.message?.conversation ||
+      q?.message?.extendedTextMessage?.text ||
+      q?.raw?.message?.conversation ||
+      q?.raw?.message?.extendedTextMessage?.text ||
+      "";
+    const candidate =
+      args.find((v) => /^https?:\/\//i.test(v)) || quotedText.match(/https?:\/\/\S+/i)?.[0];
+
+    if (!candidate) return m.reply(USAGE_BOT);
+
+    const sender = String(m.sender || "").split("@")[0];
+    await m.react("🕐").catch(() => {});
+
+    try {
+      const r = await resolve(candidate);
+      const wantAudio = args.some((v) => String(v).toLowerCase() === "audio");
+      const media = wantAudio
+        ? r.media.find((i) => i.type === "audio") || r.media[0]
+        : r.media.find((i) => i.type === "video") || r.media[0];
+      if (!media?.url) throw new Error("tidak ada link download");
+      await m.react("✅").catch(() => {});
+      if (media.type === "audio") return m.sendAudio(media.url, { mimetype: "audio/mpeg" });
+      return m.sendVideo(media.url, caption(sender, r, media));
+    } catch (error) {
+      await m.react("❌").catch(() => {});
+      return m.reply(
+        `╭━━━ *AIO DOWNLOADER* ━━━╮\n\n▸ gagal: ${error.message || "tidak diketahui"}\n▸ cek link-nya, atau coba lagi nanti\n╰━━━━━━━━━━━━━━━`,
+      );
+    }
+  },
+};
+
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+
 async function main() {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2),
@@ -312,7 +412,11 @@ async function main() {
   await new Promise((r) => process.stdout.write(s, r));
 }
 
-main().catch((e) => {
-  process.stderr.write(`error: ${e.message || e}\n`);
-  process.exitCode = 1;
-});
+if (isMain) {
+  main().catch((e) => {
+    process.stderr.write(`error: ${e.message || e}\n`);
+    process.exitCode = 1;
+  });
+}
+
+export { fetchInfo, pickLink, toOutput, fetchToFile, usage };

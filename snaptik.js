@@ -16,6 +16,7 @@ import { createDecipheriv } from "node:crypto";
 import { writeFile, mkdir, stat } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const SITE = "https://snaptik.app";
 const API_TOKEN = "/api/token";
@@ -263,6 +264,92 @@ Catatan:
   - Output JSON ke stdout, error ke stderr.`;
 }
 
+export async function resolve(rawUrl) {
+  const data = await extract(rawUrl);
+  const o = toOutput(data);
+  const v = pickVideoUrl(data);
+  const title = o.title || "TikTok Video";
+  const author = o.author || o.username || "";
+  return {
+    platform: "snaptik",
+    title,
+    author,
+    thumbnail: o.thumbnail,
+    duration: o.duration,
+    media: v.url ? [{ url: v.url, type: "video", quality: v.label }] : [],
+    result: {
+      title,
+      author,
+      thumbnail: o.thumbnail,
+      duration: o.duration,
+      url: v.url || null,
+      type: "video",
+      quality: v.label || null,
+    },
+  };
+}
+
+function caption(user, r, media) {
+  return [
+    `╭━━━ *${user}*`,
+    "┃ *SNAPTIK*",
+    "╰━━━━━━━━━━━━━━",
+    "",
+    `▸ title : ${r.title || "-"}`,
+    r.author ? `▸ author : @${r.author}` : null,
+    r.duration ? `▸ duration : ${r.duration}` : null,
+    media?.quality ? `▸ quality : ${media.quality}` : null,
+    "",
+    "> no watermark • powered by scraper-bot-kit",
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
+}
+
+const USAGE_BOT =
+  "╭━━━ *SNAPTIK* ━━━╮\n\n▸ pakai: .snaptik <link tiktok>\n▸ contoh: .snaptik https://www.tiktok.com/@user/video/123\n\n>免 watermark\n╰━━━━━━━━━━━━━━━";
+
+export default {
+  name: "snaptik",
+  command: ["snaptik"],
+  alias: [],
+  category: ["scraper"],
+  description: "ambil video tiktok tanpa watermark",
+  usage: "<link>",
+  example: ".snaptik <link>",
+  async run({ m, args, q }) {
+    const quotedText =
+      q?.text ||
+      q?.message?.conversation ||
+      q?.message?.extendedTextMessage?.text ||
+      q?.raw?.message?.conversation ||
+      q?.raw?.message?.extendedTextMessage?.text ||
+      "";
+    const candidate =
+      args.find((v) => /^https?:\/\//i.test(v)) || quotedText.match(/https?:\/\/\S+/i)?.[0];
+
+    if (!candidate) return m.reply(USAGE_BOT);
+
+    const sender = String(m.sender || "").split("@")[0];
+    await m.react("🕐").catch(() => {});
+
+    try {
+      const r = await resolve(candidate);
+      const media = r.media[0];
+      if (!media?.url) throw new Error("tidak dapat download url");
+      await m.react("✅").catch(() => {});
+      return m.sendVideo(media.url, caption(sender, r, media));
+    } catch (error) {
+      await m.react("❌").catch(() => {});
+      return m.reply(
+        `╭━━━ *SNAPTIK* ━━━╮\n\n▸ gagal: ${error.message || "tidak diketahui"}\n▸ cek link-nya, atau coba lagi nanti\n╰━━━━━━━━━━━━━━━`,
+      );
+    }
+  },
+};
+
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+
 async function main() {
   const { values, positionals } = parseArgs({
     args: process.argv.slice(2),
@@ -309,7 +396,11 @@ async function main() {
   await new Promise((r) => process.stdout.write(s, r));
 }
 
-main().catch((e) => {
-  process.stderr.write(`error: ${e.message || e}\n`);
-  process.exitCode = 1;
-});
+if (isMain) {
+  main().catch((e) => {
+    process.stderr.write(`error: ${e.message || e}\n`);
+    process.exitCode = 1;
+  });
+}
+
+export { extract, toOutput, pickVideoUrl, downloadFile, usage };

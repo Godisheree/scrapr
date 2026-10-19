@@ -10,13 +10,14 @@
  * Note : error fix sendiri.
  */
 
-const { request: httpsReq } = require('node:https')
-const { request: httpReq } = require('node:http')
-const { parseArgs } = require('node:util')
-const { spawnSync } = require('node:child_process')
-const crypto = require('node:crypto')
-const fs = require('node:fs')
-const path = require('node:path')
+import { request as httpsReq } from 'node:https'
+import { request as httpReq } from 'node:http'
+import { parseArgs } from 'node:util'
+import { spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const SITE = 'https://savefrom.co.id'
 const API = 'https://api-wh.savefrom.co.id'
@@ -444,7 +445,106 @@ catatan:
     ?videoplayback=... berumur pendek -- jangan di-cache, ambil ulang persis
     sebelum download.`
 
-const isMain = require.main === module
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false
+
+export async function resolve(rawUrl, opts = {}) {
+  const info = await convert(rawUrl, opts)
+  const wanted = pick(info.formats, {
+    video: opts.video || 'best',
+    audio: opts.audio === true,
+    audioFmt: opts.audioFmt,
+  })
+  const video = wanted.find((f) => isVideo(f))
+  const primary = video || wanted[0] || null
+  const authorName = info.author?.unique_id || info.author?.nickname || info.author?.name || null
+  return {
+    platform: 'savefrom',
+    method: 'convert',
+    title: info.title || 'SaveFrom Media',
+    author: authorName || '',
+    thumbnail: info.thumbnail,
+    duration: info.duration,
+    hosting: info.hosting,
+    media: wanted.map((f) => ({
+      url: f.url,
+      type: isAudio(f) ? 'audio' : 'video',
+      quality: String(f.quality ?? f.qualityNumber ?? ''),
+    })),
+    result: {
+      title: info.title || 'SaveFrom Media',
+      author: authorName || '',
+      thumbnail: info.thumbnail,
+      duration: info.duration,
+      hosting: info.hosting,
+      url: primary ? primary.url : null,
+      type: primary ? (isAudio(primary) ? 'audio' : 'video') : null,
+      quality: primary ? String(primary.quality ?? primary.qualityNumber ?? '') : null,
+      formats: info.formats.map((f) => ({
+        url: f.url,
+        type: isAudio(f) ? 'audio' : 'video',
+        quality: String(f.quality ?? f.qualityNumber ?? ''),
+      })),
+    },
+  }
+}
+
+function caption(user, r, media) {
+  return [
+    `╭━━━ *${user}*`,
+    '┃ *SAVEFROM*',
+    '╰━━━━━━━━━━━━━',
+    '',
+    `▸ title : ${r.title || '-'}`,
+    r.author ? `▸ author : ${r.author}` : null,
+    r.duration ? `▸ duration : ${r.duration}` : null,
+    media?.quality ? `▸ quality : ${media.quality}` : null,
+    `▸ type : ${media?.type || '-'}`,
+    '',
+    '> powered by scraper-bot-kit',
+  ]
+    .filter((line) => line !== null)
+    .join('\n')
+}
+
+const USAGE_BOT = '╭━━━ *SAVEFROM* ━━━╮\n\n▸ pakai: .savefrom <link>\n▸ contoh: .savefrom https://www.tiktok.com/@user/video/123\n\n> supported: multi platform\n╰━━━━━━━━━━━━━━━'
+
+export default {
+  name: 'savefrom',
+  command: ['savefrom', 'sf'],
+  alias: ['sf'],
+  category: ['scraper'],
+  description: 'ambil media dari savefrom.co.id',
+  usage: '<link>',
+  example: '.savefrom <link>',
+  async run({ m, args, q }) {
+    const quotedText =
+      q?.text ||
+      q?.message?.conversation ||
+      q?.message?.extendedTextMessage?.text ||
+      q?.raw?.message?.conversation ||
+      q?.raw?.message?.extendedTextMessage?.text ||
+      ''
+    const candidate =
+      args.find((value) => /^https?:\/\//i.test(value)) || quotedText.match(/https?:\/\/\S+/i)?.[0]
+
+    if (!candidate) return m.reply(USAGE_BOT)
+
+    const sender = String(m.sender || '').split('@')[0]
+    await m.react('🕐').catch(() => {})
+
+    try {
+      const r = await resolve(candidate)
+      const media = r.media.find((item) => item.type === 'video') || r.media[0]
+      if (!media?.url) throw new Error('media tidak ditemukan')
+
+      await m.react('✅').catch(() => {})
+      return m.sendVideo(media.url, caption(sender, r, media))
+    } catch (error) {
+      await m.react('❌').catch(() => {})
+      return m.reply(`╭━━━ *SAVEFROM* ━━━╮\n\n▸ gagal: ${error.message || 'tidak diketahui'}\n▸ cek link-nya, atau coba lagi nanti\n╰━━━━━━━━━━━━━━━`)
+    }
+  },
+}
 
 async function main() {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
@@ -508,4 +608,4 @@ if (isMain) {
   })
 }
 
-module.exports = { convert, download, listTable, pick, pickVideo, pickAudio, isAudio, isVideo, shapeFormat, req, reqJson, curlGet }
+export { convert, download, listTable, pick, pickVideo, pickAudio, isAudio, isVideo, shapeFormat, req, reqJson, curlGet }

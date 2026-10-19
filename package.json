@@ -1,0 +1,13 @@
+{
+  "name": "scraper-bot-kit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Koleksi scraper multi-platform. Tiap file = 1 scraper, jalan dua arah: CLI (`node file.js <cmd> <args>`) dan plugin Baileys WhatsApp (`import` + default export).",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=21"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

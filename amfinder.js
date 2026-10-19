@@ -9,10 +9,11 @@
  * Note : error fix sendiri.
  */
 
-const http = require("node:http");
-const https = require("node:https");
-const { StringDecoder } = require("node:string_decoder");
-const { parseArgs } = require("node:util");
+import http from "node:http";
+import https from "node:https";
+import { StringDecoder } from "node:string_decoder";
+import { parseArgs } from "node:util";
+import { pathToFileURL } from "node:url";
 
 const SITE = "https://amfinder.web.id";
 const API_SEARCH = "/api/search";
@@ -375,6 +376,109 @@ function compact(out, cmd) {
   return out;
 }
 
+export async function resolve(mediaUrl) {
+  const r = await cmdFind(mediaUrl);
+  const v = r.video || {};
+  const media = [];
+  for (const u of [v.playUrlNoWm, v.playUrl, v.url]) {
+    if (u && /^https?:\/\//i.test(u) && !media.some((x) => x.url === u)) {
+      media.push({ url: u, type: "video", quality: "no-watermark" });
+    }
+  }
+  for (const p of r.presetLinks || []) {
+    const u = p && (p.url || p.link);
+    if (u && /^https?:\/\//i.test(u) && !media.some((x) => x.url === u)) {
+      media.push({ url: u, type: "video", quality: p.name || p.label || "preset" });
+    }
+  }
+  const primary = media[0] || null;
+  const title = v.description || r.author || "Media";
+  return {
+    platform: "amfinder",
+    title,
+    author: r.author || "",
+    thumbnail: v.cover || null,
+    duration: v.duration || null,
+    media,
+    result: {
+      title,
+      author: r.author || "",
+      thumbnail: v.cover || null,
+      duration: v.duration || null,
+      url: primary ? primary.url : null,
+      type: "video",
+      quality: primary ? primary.quality : null,
+      formats: media,
+    },
+  };
+}
+
+export async function search(keyword) {
+  return cmdSearch(keyword);
+}
+
+function caption(user, r, media) {
+  return [
+    `╭━━━ *${user}*`,
+    "┃ *AMFINDER*",
+    "╰━━━━━━━━━━━━━━",
+    "",
+    `▸ title : ${r.title || "-"}`,
+    r.author ? `▸ author : ${r.author}` : null,
+    r.duration ? `▸ duration : ${r.duration}` : null,
+    media?.quality ? `▸ source : ${media.quality}` : null,
+    `▸ link : ${(media?.url || "").slice(0, 44)}...`,
+    "",
+    "> powered by scraper-bot-kit",
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
+}
+
+const USAGE_BOT =
+  "╭━━━ *AMFINDER* ━━━╮\n\n▸ pakai: .amfind <link media>\n▸ contoh: .amfind https://www.tiktok.com/@user/video/123\n\n▸ atau pakai command search:\n▸ .amsearch <keyword>\n╰━━━━━━━━━━━━━━━";
+
+export default {
+  name: "amfind",
+  command: ["amfind"],
+  alias: [],
+  category: ["scraper"],
+  description: "ambil link media + preset links dari amfinder",
+  usage: "<link>",
+  example: ".amfind <link>",
+  async run({ m, args, q }) {
+    const quotedText =
+      q?.text ||
+      q?.message?.conversation ||
+      q?.message?.extendedTextMessage?.text ||
+      q?.raw?.message?.conversation ||
+      q?.raw?.message?.extendedTextMessage?.text ||
+      "";
+    const candidate =
+      args.find((v) => /^https?:\/\//i.test(v)) || quotedText.match(/https?:\/\/\S+/i)?.[0];
+
+    if (!candidate) return m.reply(USAGE_BOT);
+
+    const sender = String(m.sender || "").split("@")[0];
+    await m.react("🕐").catch(() => {});
+
+    try {
+      const r = await resolve(candidate);
+      const media = r.media[0];
+      if (!media?.url) throw new Error("media tidak ditemukan");
+      await m.react("✅").catch(() => {});
+      return m.sendVideo(media.url, caption(sender, r, media));
+    } catch (error) {
+      await m.react("❌").catch(() => {});
+      return m.reply(
+        `╭━━━ *AMFINDER* ━━━╮\n\n▸ gagal: ${error.message || "tidak diketahui"}\n▸ cek link-nya, atau coba lagi nanti\n╰━━━━━━━━━━━━━━━`,
+      );
+    }
+  },
+};
+
+const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+
 async function main() {
   let argv;
   try {
@@ -426,7 +530,11 @@ async function main() {
   process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
 }
 
-main().catch((e) => {
-  process.stderr.write(`error: ${e.message || e}\n`);
-  process.exitCode = 1;
-});
+if (isMain) {
+  main().catch((e) => {
+    process.stderr.write(`error: ${e.message || e}\n`);
+    process.exitCode = 1;
+  });
+}
+
+export { cmdSearch, cmdFind, cmdPresets, usage };
