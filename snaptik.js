@@ -1,11 +1,13 @@
 /**
- * Name : SnapTik TikTok Scraper (info, download video)
+ * Name : SnapTik TikTok Scraper (info, download video, promo repo)
  * Owner : Godhumanv2
  * Base Web : https://snaptik.app (TikTok downloader, tanpa watermark)
  * Type : Scraper
  * Function : Scrape lengkap -> info video (id, judul, author, username,
  *            thumbnail, durasi, stats) dan download MP4 -> direct download
  *            URL + headers yang dibutuhkan. Output JSON ke stdout.
+ *            Bot WhatsApp: balas "memproses" + tombol copy link repo,
+ *            lalu kirim MP4 sebagai pesan terpisah.
  * Note : error fix sendiri.
  */
 
@@ -17,6 +19,7 @@ import { writeFile, mkdir, stat } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
 
 const SITE = "https://snaptik.app";
 const API_TOKEN = "/api/token";
@@ -25,6 +28,8 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const TIMEOUT = 30_000;
 const MAX_SIZE = 500_000;
+const REPO_URL = "https://github.com/Godisheree/scrapr";
+const REPO_LABEL = "📋 copy link repo";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -352,24 +357,24 @@ function caption(user, r, media) {
 const USAGE_BOT =
   "╭━━━ *SNAPTIK* ━━━╮\n\n▸ pakai: .snaptik <link tiktok>\n▸ contoh: .snaptik https://www.tiktok.com/@user/video/123\n\n>免 watermark\n╰━━━━━━━━━━━━━━━";
 
-const config = {
-  name: "snaptik",
-  alias: ["snap", "snt"],
-  category: "downloader",
-  description: "download video TikTok tanpa watermark via snaptik.app",
-  usage: "<link>",
-  example: ".snaptik https://www.tiktok.com/@user/video/123",
-  isOwner: false,
-  isPremium: false,
-  isGroup: false,
-  isPrivate: false,
-  isAdmin: false,
-  isBotAdmin: false,
-  cooldown: 10,
-  limit: 1,
-  energi: 1,
-  isEnabled: true,
-};
+const NATIVE_FLOW_NODES = [
+  {
+    tag: "biz",
+    attrs: {},
+    content: [
+      {
+        tag: "interactive",
+        attrs: { type: "native_flow", v: "1" },
+        content: [
+          {
+            tag: "native_flow",
+            attrs: { v: "9", name: "mixed" },
+          },
+        ],
+      },
+    ],
+  },
+];
 
 function pickSocket(m, ctx) {
   return ctx?.sock || ctx?.conn || ctx?.socket || m?.sock || null;
@@ -385,6 +390,7 @@ function pickUrl(m, ctx) {
     m?.quoted?.body,
     m?.quoted?.text,
     m?.quoted?.message?.conversation,
+    m?.quoted?.raw?.message?.conversation,
   ];
   for (const s of sources) {
     if (typeof s !== "string") continue;
@@ -394,10 +400,20 @@ function pickUrl(m, ctx) {
   return "";
 }
 
+function quoteInfo(m) {
+  const q = m?.quoted || m;
+  return {
+    stanzaId: q?.id,
+    participant: q?.sender,
+    quotedMessage: q?.content || q?.raw?.message || q?.message,
+    remoteJid: m?.chat,
+  };
+}
+
 async function sendText(m, ctx, text) {
   if (typeof m?.reply === "function") return m.reply(text);
   const sock = pickSocket(m, ctx);
-  if (sock?.sendMessage) return sock.sendMessage(m.chat, { text }, { quoted: m });
+  if (sock?.sendMessage) return sock.sendMessage(m.chat, { text }, { quoted: m.raw || m });
   return null;
 }
 
@@ -420,16 +436,72 @@ async function sendVideo(m, ctx, url, captionText) {
     return await sock.sendMessage(
       m.chat,
       { video: buf, mimetype: "video/mp4", caption: captionText },
-      { quoted: m },
+      { quoted: m.raw || m },
     );
   } catch {
     return sock.sendMessage(
       m.chat,
       { video: { url }, mimetype: "video/mp4", caption: captionText },
-      { quoted: m },
+      { quoted: m.raw || m },
     );
   }
 }
+
+async function sendPromoCard(m, ctx, note) {
+  const sock = pickSocket(m, ctx);
+  if (!sock?.relayMessage) return null;
+  const content = {
+    viewOnceMessage: {
+      message: {
+        interactiveMessage: {
+          contextInfo: quoteInfo(m),
+          body: { text: note },
+          footer: { text: "scraper-bot-kit • repo gratis" },
+          nativeFlowMessage: {
+            buttons: [
+              {
+                name: "cta_copy",
+                buttonParamsJson: JSON.stringify({
+                  display_text: REPO_LABEL,
+                  copy_code: REPO_URL,
+                }),
+              },
+            ],
+            messageParamsJson: JSON.stringify({ in_thread_buttons_limit: 1 }),
+          },
+        },
+      },
+    },
+  };
+  try {
+    return await sock.relayMessage(m.chat, content, {
+      messageId: randomUUID(),
+      additionalNodes: NATIVE_FLOW_NODES,
+      quoted: m.raw || m,
+    });
+  } catch {
+    return null;
+  }
+}
+
+const config = {
+  name: "snaptik",
+  alias: ["snap", "snt"],
+  category: ["scraper"],
+  description: "download video TikTok tanpa watermark via snaptik.app",
+  usage: "<link>",
+  example: ".snaptik https://www.tiktok.com/@user/video/123",
+  isOwner: false,
+  isPremium: false,
+  isGroup: false,
+  isPrivate: false,
+  isAdmin: false,
+  isBotAdmin: false,
+  cooldown: 10,
+  limit: 1,
+  energi: 1,
+  isEnabled: true,
+};
 
 async function handler(m, ctx = {}) {
   const url = pickUrl(m, ctx);
@@ -437,6 +509,7 @@ async function handler(m, ctx = {}) {
 
   const sender = String(m?.sender || "").split("@")[0];
   await sendReaction(m, ctx, "🕐");
+  await sendPromoCard(m, ctx, "⏳ memproses video...");
 
   try {
     const r = await resolve(url);
@@ -457,7 +530,7 @@ async function handler(m, ctx = {}) {
 }
 
 handler.command = /^(snaptik|snap|snt)$/i;
-handler.tags = ["downloader"];
+handler.tags = ["scraper"];
 handler.help = ["snaptik <link>"];
 handler.limit = 1;
 handler.premium = false;
@@ -522,4 +595,4 @@ if (isMain) {
   });
 }
 
-export { extract, toOutput, pickVideoUrl, downloadFile, usage };
+export { extract, toOutput, pickVideoUrl, downloadFile, fetchBuffer, usage };
