@@ -180,6 +180,49 @@ async function downloadFile(url, dest) {
   return dest;
 }
 
+async function fetchBuffer(url, maxBytes = 200_000_000) {
+  const u = new URL(url);
+  const lib = u.protocol === "http:" ? httpReq : httpsReq;
+  return new Promise((resolve, reject) => {
+    const rq = lib(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || (u.protocol === "http:" ? 80 : 443),
+        path: u.pathname + u.search,
+        method: "GET",
+        headers: { "User-Agent": UA, "X-Requested-With": "XMLHttpRequest" },
+      },
+      (rs) => {
+        const { statusCode = 0, headers: rh } = rs;
+        if (statusCode >= 300 && statusCode < 400 && rh.location) {
+          rs.resume();
+          return resolve(fetchBuffer(new URL(rh.location, url).toString(), maxBytes));
+        }
+        if (statusCode !== 200) {
+          rs.resume();
+          return reject(new Error(`download gagal (status ${statusCode})`));
+        }
+        const chunks = [];
+        let n = 0;
+        rs.on("data", (c) => {
+          n += c.length;
+          if (n > maxBytes) {
+            rs.destroy();
+            return reject(new Error("file terlalu besar, batal"));
+          }
+          chunks.push(c);
+        });
+        rs.on("end", () => resolve(Buffer.concat(chunks)));
+        rs.on("error", reject);
+      }
+    );
+    rq.setTimeout(120_000, () => rq.destroy(new Error("timeout download")));
+    rq.on("error", reject);
+    rq.end();
+  });
+}
+
 function req(url, { method = "GET", headers = {}, body, timeout = TIMEOUT, maxRedirect = 5 } = {}) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -309,44 +352,120 @@ function caption(user, r, media) {
 const USAGE_BOT =
   "╭━━━ *SNAPTIK* ━━━╮\n\n▸ pakai: .snaptik <link tiktok>\n▸ contoh: .snaptik https://www.tiktok.com/@user/video/123\n\n>免 watermark\n╰━━━━━━━━━━━━━━━";
 
-export default {
+const config = {
   name: "snaptik",
-  command: ["snaptik"],
-  alias: [],
-  category: ["scraper"],
-  description: "ambil video tiktok tanpa watermark",
+  alias: ["snap", "snt"],
+  category: "downloader",
+  description: "download video TikTok tanpa watermark via snaptik.app",
   usage: "<link>",
-  example: ".snaptik <link>",
-  async run({ m, args, q }) {
-    const quotedText =
-      q?.text ||
-      q?.message?.conversation ||
-      q?.message?.extendedTextMessage?.text ||
-      q?.raw?.message?.conversation ||
-      q?.raw?.message?.extendedTextMessage?.text ||
-      "";
-    const candidate =
-      args.find((v) => /^https?:\/\//i.test(v)) || quotedText.match(/https?:\/\/\S+/i)?.[0];
-
-    if (!candidate) return m.reply(USAGE_BOT);
-
-    const sender = String(m.sender || "").split("@")[0];
-    await m.react("🕐").catch(() => {});
-
-    try {
-      const r = await resolve(candidate);
-      const media = r.media[0];
-      if (!media?.url) throw new Error("tidak dapat download url");
-      await m.react("✅").catch(() => {});
-      return m.sendVideo(media.url, caption(sender, r, media));
-    } catch (error) {
-      await m.react("❌").catch(() => {});
-      return m.reply(
-        `╭━━━ *SNAPTIK* ━━━╮\n\n▸ gagal: ${error.message || "tidak diketahui"}\n▸ cek link-nya, atau coba lagi nanti\n╰━━━━━━━━━━━━━━━`,
-      );
-    }
-  },
+  example: ".snaptik https://www.tiktok.com/@user/video/123",
+  isOwner: false,
+  isPremium: false,
+  isGroup: false,
+  isPrivate: false,
+  isAdmin: false,
+  isBotAdmin: false,
+  cooldown: 10,
+  limit: 1,
+  energi: 1,
+  isEnabled: true,
 };
+
+function pickSocket(m, ctx) {
+  return ctx?.sock || ctx?.conn || ctx?.socket || m?.sock || null;
+}
+
+function pickUrl(m, ctx) {
+  const sources = [
+    ctx?.text,
+    m?.text,
+    m?.body,
+    Array.isArray(m?.args) ? m.args.join(" ") : m?.args,
+    Array.isArray(ctx?.args) ? ctx.args.join(" ") : ctx?.args,
+    m?.quoted?.body,
+    m?.quoted?.text,
+    m?.quoted?.message?.conversation,
+  ];
+  for (const s of sources) {
+    if (typeof s !== "string") continue;
+    const hit = s.match(/https?:\/\/\S+/i);
+    if (hit) return hit[0];
+  }
+  return "";
+}
+
+async function sendText(m, ctx, text) {
+  if (typeof m?.reply === "function") return m.reply(text);
+  const sock = pickSocket(m, ctx);
+  if (sock?.sendMessage) return sock.sendMessage(m.chat, { text }, { quoted: m });
+  return null;
+}
+
+async function sendReaction(m, ctx, emoji) {
+  try {
+    if (typeof m?.react === "function") return await m.react(emoji);
+    const sock = pickSocket(m, ctx);
+    if (sock?.sendMessage) {
+      return await sock.sendMessage(m.chat, { react: { text: emoji, key: m.key } });
+    }
+  } catch {}
+  return null;
+}
+
+async function sendVideo(m, ctx, url, captionText) {
+  const sock = pickSocket(m, ctx);
+  if (!sock?.sendMessage) return null;
+  try {
+    const buf = await fetchBuffer(url);
+    return await sock.sendMessage(
+      m.chat,
+      { video: buf, mimetype: "video/mp4", caption: captionText },
+      { quoted: m },
+    );
+  } catch {
+    return sock.sendMessage(
+      m.chat,
+      { video: { url }, mimetype: "video/mp4", caption: captionText },
+      { quoted: m },
+    );
+  }
+}
+
+async function handler(m, ctx = {}) {
+  const url = pickUrl(m, ctx);
+  if (!url) return sendText(m, ctx, USAGE_BOT);
+
+  const sender = String(m?.sender || "").split("@")[0];
+  await sendReaction(m, ctx, "🕐");
+
+  try {
+    const r = await resolve(url);
+    const media = r.media[0];
+    if (!media?.url) throw new Error("tidak dapat download url");
+    const sent = await sendVideo(m, ctx, media.url, caption(sender, r, media));
+    if (!sent) throw new Error("tidak bisa kirim media");
+    await sendReaction(m, ctx, "✅");
+    return sent;
+  } catch (error) {
+    await sendReaction(m, ctx, "❌");
+    return sendText(
+      m,
+      ctx,
+      `╭━━━ *SNAPTIK* ━━━╮\n\n▸ gagal: ${error.message || "tidak diketahui"}\n▸ cek link-nya, atau coba lagi nanti\n╰━━━━━━━━━━━━━━━`,
+    );
+  }
+}
+
+handler.command = /^(snaptik|snap|snt)$/i;
+handler.tags = ["downloader"];
+handler.help = ["snaptik <link>"];
+handler.limit = 1;
+handler.premium = false;
+handler.owner = false;
+handler.config = config;
+
+export { config, handler };
+export default handler;
 
 const isMain = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
 
