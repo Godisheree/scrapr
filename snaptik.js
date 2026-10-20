@@ -95,8 +95,28 @@ function normalizeUrl(input) {
   return s;
 }
 
+function isShortLink(url) {
+  return /^https?:\/\/(www\.|vm\.|vt\.)?tiktok\.com\/(?!@|v\/|t\/|f\/|embed|player)/i.test(url) ||
+         /^https?:\/\/(www\.)?vm\.tiktok\.com\//i.test(url);
+}
+
+async function resolveShortLink(url) {
+  try {
+    const r = await req(url, { method: "GET", headers: { Accept: "text/html" } });
+    const loc = r.headers?.location;
+    if (loc) return new URL(loc, url).toString();
+    const hit = r.body.match(/https?:\/\/(?:www\.|m\.)?tiktok\.com\/@[^"'\\\s]+\/video\/\d+/i);
+    if (hit) return hit[0];
+  } catch {}
+  return url;
+}
+
 async function extract(url, tries = 3) {
-  const clean = normalizeUrl(url);
+  let clean = normalizeUrl(url);
+  if (isShortLink(clean)) {
+    const resolved = await resolveShortLink(clean);
+    if (resolved !== clean) clean = resolved;
+  }
   let lastErr;
   for (let i = 0; i < tries; i++) {
     const verify = await fetchVerify();
@@ -106,6 +126,12 @@ async function extract(url, tries = 3) {
     if (r.json && r.json.success) return r.json.data || r.json;
     const msg = r.json?.error || r.body.slice(0, 160);
     lastErr = new Error(`extract gagal (status ${r.status}): ${msg}`);
+    if (r.status === 404) {
+      throw new Error(
+        "video tidak ditemukan atau masih ditahan TikTok (status_reviewing). " +
+        "Coba link video lain yang sudah published.",
+      );
+    }
     if (r.status === 403 || r.status === 429) {
       if (i < tries - 1) await sleep(800 * (i + 1));
       continue;
