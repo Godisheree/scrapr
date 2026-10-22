@@ -19,7 +19,10 @@ import { pathToFileURL } from 'node:url'
 import fs from 'node:fs'
 import path from 'node:path'
 
-const API = 'https://demo.douyin.wtf'
+const API_LIST = (process.env.DOUYIN_API || 'https://demo.douyin.wtf')
+  .split(',')
+  .map((x) => x.trim().replace(/\/+$/, ''))
+  .filter(Boolean)
 const SITE = 'https://www.douyin.com'
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 const TIMEOUT = 60_000
@@ -107,39 +110,32 @@ async function fetchBuffer(url, { timeout = 180_000, headers = {} } = {}) {
   return r.body
 }
 
-let sessionCookie = null
+const sessionState = { base: null, cookie: null }
 
-async function login() {
-  if (sessionCookie) return sessionCookie
-  const demo = await reqJson(API + '/api/v1/auth/demo')
+async function login(base) {
+  const demo = await reqJson(base + '/api/v1/auth/demo')
   const cred = demo.json && demo.json.data
-  if (!cred || !cred.username) throw new Error('kredensial demo API tidak tersedia')
-  const res = await req(API + '/api/v1/auth/login', {
+  if (!cred || !cred.username) throw new Error('kredensial demo API tidak tersedia di ' + base)
+  const res = await req(base + '/api/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: cred.username, password: cred.password }),
   })
   const raw = res.headers['set-cookie']
   const cookie = (Array.isArray(raw) ? raw[0] : raw || '').split(';')[0]
-  if (!cookie) throw new Error('login API gagal, tidak ada session cookie')
-  sessionCookie = cookie
+  if (!cookie) throw new Error('login API gagal di ' + base + ', tidak ada session cookie')
   return cookie
 }
 
-async function apiCall(pathname, params = {}) {
-  const cookie = await login()
-  const query = Object.entries(params)
-    .filter(([, v]) => v !== undefined && v !== null && v !== '')
-    .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v)))
-    .join('&')
-  const target = API + pathname + (query ? '?' + query : '')
+async function apiCallOnce(base, cookie, pathname, query) {
+  const target = base + pathname + (query ? '?' + query : '')
   const r = await reqJson(target, { headers: { Cookie: cookie } })
   const json = r.json
   if (r.status === 202 && json && json.data && json.data.task_id) {
     const taskId = json.data.task_id
     for (let i = 0; i < POLL_MAX; i++) {
       await sleep(POLL_GAP)
-      const t = await reqJson(API + '/api/v1/tasks/' + taskId, { headers: { Cookie: cookie } })
+      const t = await reqJson(base + '/api/v1/tasks/' + taskId, { headers: { Cookie: cookie } })
       const state = t.json && t.json.data && t.json.data.state
       if (state === 'done') return t.json.data.data
       if (state === 'failed') {
@@ -151,9 +147,39 @@ async function apiCall(pathname, params = {}) {
   }
   if (!json || json.success === false) {
     const e = (json && json.error) || {}
+    const code = e.code || ''
+    if (code === 'UNAUTHENTICATED') {
+      sessionState.cookie = null
+      throw new Error('sesi API kedaluwarsa di ' + base)
+    }
     throw new Error('API: ' + (e.message || 'respons tidak dikenali'))
   }
   return json.data
+}
+
+async function apiCall(pathname, params = {}) {
+  const query = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v)))
+    .join('&')
+  let last = null
+  for (let i = 0; i < API_LIST.length; i++) {
+    const base = API_LIST[i]
+    try {
+      let cookie = sessionState.base === base ? sessionState.cookie : null
+      if (!cookie) cookie = await login(base)
+      sessionState.base = base
+      sessionState.cookie = cookie
+      return await apiCallOnce(base, cookie, pathname, query)
+    } catch (e) {
+      last = e
+      sessionState.cookie = null
+      if (i < API_LIST.length - 1) await sleep(700 * (i + 1))
+    }
+  }
+  throw new Error(
+    'semua instance API gagal (' + API_LIST.join(', ') + '): ' + (last ? last.message : 'tidak diketahui'),
+  )
 }
 
 function isDouyin(url) {
@@ -463,10 +489,13 @@ function usage() {
     '  demo.douyin.wtf  -> API publik Douyin_TikTok_Download_API (repo Evil0ctal)',
     '                     kredensial demo diambil otomatis tiap jalan, task async di-poll',
     '',
+    'Ganti instance (pisah koma, dipakai berurutan sebagai cadangan):',
+    '  DOUYIN_API="https://demo.douyin.wtf,https://instance-kamu.example" node douyin.js info <link>',
+    '',
     'Catatan jujur:',
     '  - link /video/ = video, /note/ = galeri foto, /user/ = profil',
-    '  - video diambil dari host zjcdn.com; kalau host itu diblokir, ganti',
-    '    API di baris 25 dengan instance self-hosted sendiri',
+    '  - instance demo itu milik orang lain: bisa dimatikan kapan saja tanpa',
+    '    pemberitahuan. Self-host repo-nya kalau butuh jaminan (docker compose up).',
   ].join('\n')
 }
 

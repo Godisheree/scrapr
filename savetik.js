@@ -8,6 +8,8 @@
  *            username, follower, signature, avatar, thumbnail, durasi,
  *            statistik, musik) -> link download (video MP4, audio MP3,
  *            galeri foto, story) -> direct URL + headers yang dibutuhkan.
+ *            Sumber: savetik.id (TikTok), savetik.org (link download SaveTik),
+ *            API publik Douyin_TikTok_Download_API (Douyin + info akun).
  *            Output JSON ke stdout.
  * Note : error fix sendiri.
  */
@@ -29,7 +31,9 @@ const TOOL_ROUTES = {
   mp3: '/id/tiktok-mp3-downloader/',
   notes: '/id/download-tiktok-notes/',
 }
-const DT_API = 'https://demo.douyin.wtf'
+const DT_API = process.env.DOUYIN_API || 'https://demo.douyin.wtf'
+const SVID = 'https://savetik.id'
+const SVID_TOKEN = 'db6c98f6e9aeef6ec98544dba23f73a64c99bd0c0961fe3e8b66eef6ce948dab'
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 const TIMEOUT = 60_000
 const MAX_SIZE = 300_000_000
@@ -249,8 +253,15 @@ function rawCandidates(raw, platform) {
     for (const u of da.url_list || []) pushUrl(out.video, u, 'Video (ada watermark)')
     const mu = raw.music && raw.music.play_url && raw.music.play_url.url
     for (const u of (mu && mu.url_list) || []) pushUrl(out.audio, u, 'Audio ' + ((raw.music && raw.music.title) || ''))
-    for (const im of raw.image_list || []) for (const u of im.url_list || []) pushUrl(out.image, u, 'Foto')
-    for (const im of raw.images || []) for (const u of im.url_list || []) pushUrl(out.image, u, 'Foto')
+    let dyIndex = 0
+    for (const im of raw.image_list || []) {
+      for (const u of im.url_list || []) pushUrl(out.image, u, 'Foto', { index: dyIndex })
+      dyIndex++
+    }
+    for (const im of raw.images || []) {
+      for (const u of im.url_list || []) pushUrl(out.image, u, 'Foto', { index: dyIndex })
+      dyIndex++
+    }
   } else {
     pushUrl(out.video, rv.playAddr, 'Video original')
     for (const b of rv.bitrateInfo || []) {
@@ -266,10 +277,12 @@ function rawCandidates(raw, platform) {
     }
     pushUrl(out.audio, raw.music && raw.music.playUrl, 'Audio ' + ((raw.music && raw.music.title) || ''))
     const ip = raw.imagePost || {}
+    let tkIndex = 0
     for (const im of ip.images || []) {
-      for (const u of (im.imageURL && im.imageURL.urlList) || []) pushUrl(out.image, u, 'Foto')
+      for (const u of (im.imageURL && im.imageURL.urlList) || []) pushUrl(out.image, u, 'Foto', { index: tkIndex })
+      tkIndex++
     }
-    for (const u of (ip.cover && ip.cover.imageURL && ip.cover.imageURL.urlList) || []) pushUrl(out.image, u, 'Cover')
+    for (const u of (ip.cover && ip.cover.imageURL && ip.cover.imageURL.urlList) || []) pushUrl(out.image, u, 'Cover', { index: tkIndex })
   }
   return out
 }
@@ -296,6 +309,55 @@ function fmtDuration(ms) {
   return m + ':' + String(r).padStart(2, '0')
 }
 
+async function svidResolve(url) {
+  const r = await reqJson(SVID + '/api/action', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Token': SVID_TOKEN,
+      Accept: 'application/json',
+      Origin: SVID,
+      Referer: SVID + '/',
+    },
+    body: JSON.stringify({ url }),
+  })
+  const j = r.json
+  if (!j || j.status_code !== 0) throw new Error('savetik.id: ' + ((j && j.error) || 'respons ' + r.status))
+  return j
+}
+
+function svidMedia(data) {
+  const out = []
+  let index = 0
+  for (const it of data.items || []) {
+    if (it.type === 'video') {
+      if (it.videoUrl) out.push({ type: 'video', url: it.videoUrl, label: 'Video original', source: 'savetik.id' })
+      if (it.audioUrl) out.push({ type: 'audio', url: it.audioUrl, label: 'Audio', source: 'savetik.id' })
+      if (it.downloadUrl) out.push({ type: 'video', url: it.downloadUrl, label: 'Video (proxy rapidcdn)', source: 'savetik.id' })
+    } else if (it.type === 'image') {
+      const iu = it.imageUrl || {}
+      const iurl = typeof iu === 'string' ? iu : iu.url
+      const idl = typeof iu === 'string' ? '' : iu.downloadUrl
+      if (iurl) out.push({ type: 'image', url: iurl, label: 'Foto', source: 'savetik.id', index })
+      if (idl) out.push({ type: 'image', url: idl, label: 'Foto (proxy)', source: 'savetik.id', index })
+      index++
+    }
+  }
+  return out
+}
+
+async function svidHd(data) {
+  const item = (data.items || []).find((x) => x.type === 'video' && x.hdDownloadUrl)
+  if (!item) return null
+  try {
+    const r = await reqJson(item.hdDownloadUrl)
+    const url = r.json && r.json.url
+    return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null
+  } catch {
+    return null
+  }
+}
+
 export async function resolve(url, opts = {}) {
   const input = String(url || '').trim()
   if (!/^https?:\/\//i.test(input)) throw new Error('URL tidak valid: ' + input)
@@ -305,6 +367,16 @@ export async function resolve(url, opts = {}) {
   const out = { ok: true, url: input, platform, tool, via: [], warnings: [] }
   let api = null
   let sv = null
+  let sid = null
+
+  if (platform === 'tiktok') {
+    try {
+      sid = await svidResolve(input)
+      out.via.push('savetik.id')
+    } catch (e) {
+      out.warnings.push('savetik.id: ' + e.message)
+    }
+  }
 
   try {
     const cookie = await dtSession()
@@ -321,18 +393,26 @@ export async function resolve(url, opts = {}) {
     out.warnings.push('savetik.org: ' + e.message)
   }
 
-  if (!api && !sv) throw new Error(out.warnings.join(' | '))
+  if (!api && !sv && !sid) throw new Error(out.warnings.join(' | '))
 
   const media = []
+  if (sid) {
+    for (const item of svidMedia(sid)) media.push(item)
+    const hd = await svidHd(sid)
+    if (hd) media.push({ type: 'video', url: hd, label: 'Video HD', source: 'savetik.id' })
+  }
   if (sv) {
+    let svIndex = 0
     for (const d of sv.data.downloads || []) {
       if (!d || !d.url) continue
+      const type = d.type || 'video'
       media.push({
-        type: d.type || 'video',
+        type,
         url: d.url,
         label: d.label || d.filename || 'Download',
         filename: d.filename || null,
         source: 'savetik.org',
+        index: type === 'image' ? svIndex++ : undefined,
       })
     }
   }
@@ -362,7 +442,7 @@ export async function resolve(url, opts = {}) {
     }
     const images = (api.media && api.media.images) || []
     images.forEach((im, i) => {
-      if (im && im.url) media.push({ type: 'image', url: im.url, label: 'Foto ' + (i + 1), source: 'api-publik' })
+      if (im && im.url) media.push({ type: 'image', url: im.url, label: 'Foto ' + (i + 1), source: 'api-publik', index: i })
     })
     const raw = rawCandidates(api.raw, platform)
     for (const item of raw.video) media.push(Object.assign({ type: 'video', source: 'api-publik' }, item))
@@ -373,25 +453,26 @@ export async function resolve(url, opts = {}) {
   const primary = pickMedia(media, tool)
   const cover = api && api.media && api.media.covers && api.media.covers[0] ? api.media.covers[0].url : null
   const author = (api && api.author) || {}
+  const sidInfo = (sid && sid.postinfo) || {}
   const durationMs = (api && api.duration_ms) || (sv && sv.data.duration ? sv.data.duration * 1000 : null)
-  const title = (api && (api.description || api.title)) || (sv && sv.data.title) || ''
+  const title = (api && (api.description || api.title)) || (sv && sv.data.title) || sidInfo.media_title || ''
 
   out.result = {
     title,
-    author: author.nickname || (sv && sv.data.author) || '',
+    author: author.nickname || sidInfo.username || (sv && sv.data.author) || '',
     thumbnail: (sv && sv.data.thumbnail) || cover || (media.find((m) => m.type === 'image') || {}).url || null,
     url: primary ? primary.url : null,
     type: primary ? primary.type : null,
     quality: primary ? primary.quality || null : null,
     description: (api && api.description) || (sv && sv.data.title) || '',
     account: {
-      username: author.unique_id || null,
-      nickname: author.nickname || null,
+      username: author.unique_id || sidInfo.unique_id || null,
+      nickname: author.nickname || sidInfo.username || null,
       signature: author.signature || null,
       verified: author.verified === true,
       followers: (author.stats && author.stats.follower_count) || null,
       likes: (author.stats && author.stats.total_digg) || null,
-      avatar: author.avatar && author.avatar.url ? author.avatar.url : null,
+      avatar: (author.avatar && author.avatar.url) || sidInfo.avatar_url || null,
       url: author.web_url || null,
     },
     kind: (api && api.kind) || null,
@@ -435,12 +516,17 @@ function usage() {
     '  node savetik.js download "https://www.tiktok.com/@user/photo/123" --tool slideshow --out ./dl',
     '',
     'Sumber data:',
-    '  savetik.org        -> link download SaveTik (video/mp3/foto/story/notes)',
-    '  demo.douyin.wtf   -> API publik Douyin_TikTok_Download_API (info akun + URL CDN asli)',
+    '  savetik.id        -> scraper web SaveTik (TikTok): video/audio/foto + HD',
+    '  savetik.org       -> link download SaveTik (video/mp3/foto/story/notes)',
+    '  demo.douyin.wtf   -> API publik (Douyin + info akun + URL CDN asli)',
+    '',
+    'Host API publik bisa diganti (dipisah koma untuk cadangan):',
+    '  DOUYIN_API="https://demo.douyin.wtf,https://instance-kamu" node savetik.js info <url>',
     '',
     'Catatan jujur:',
     '  - domain savetik.co diblokir Cloudflare challenge (butuh browser), jadi pakai savetik.org',
     '  - tool douyin di savetik.org butuh cookie server, jadi data Douyin diambil dari API publik',
+    '  - kalau API publik mati, TikTok tetap jalan (savetik.id + savetik.org); Douyin mati',
   ].join('\n')
 }
 
@@ -475,30 +561,23 @@ function wantedType(tool) {
   return tool === 'mp3' ? 'audio' : tool === 'slideshow' ? 'image' : 'video'
 }
 
-function groupBySource(items) {
-  const groups = []
-  for (const item of items) {
-    const key = item.source || 'api-publik'
-    let g = groups.find((x) => x.key === key)
-    if (!g) {
-      g = { key, items: [] }
-      groups.push(g)
-    }
-    g.items.push(item)
-  }
-  return groups
-}
-
 async function runDownload(data, outDir) {
   const want = wantedType(data.tool)
   const candidates = data.media.filter((m) => m.type === want)
   if (!candidates.length) throw new Error('tidak ada media ' + want + ' untuk link itu')
   fs.mkdirSync(outDir, { recursive: true })
+  let last = null
   if (want === 'image') {
-    let last = null
-    for (const g of groupBySource(candidates)) {
-      const files = []
-      for (const item of g.items) {
+    const buckets = new Map()
+    for (const item of candidates) {
+      const key = item.index === undefined ? item.url : 'idx' + item.index
+      if (!buckets.has(key)) buckets.set(key, [])
+      buckets.get(key).push(item)
+    }
+    const files = []
+    for (const bucket of buckets.values()) {
+      let saved = null
+      for (const item of bucket) {
         let buf = null
         try {
           buf = await fetchBuffer(item.url)
@@ -506,13 +585,14 @@ async function runDownload(data, outDir) {
           last = e
           continue
         }
-        files.push(await saveItem(item, buf, outDir, data, files.length, true))
+        saved = await saveItem(item, buf, outDir, data, files.length, true)
+        break
       }
-      if (files.length) return files
+      if (saved) files.push(saved)
     }
-    throw last || new Error('gagal mengunduh foto')
+    if (!files.length) throw last || new Error('gagal mengunduh foto')
+    return files
   }
-  let last = null
   for (const item of candidates) {
     try {
       const buf = await fetchBuffer(item.url)
