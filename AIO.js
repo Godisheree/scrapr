@@ -263,7 +263,16 @@ export async function resolve(rawUrl, opts = {}) {
   const media = (data.links || [])
     .filter((l) => l && l.url)
     .map((l) => {
-      const audio = /mp3|m4a|opus|audio/i.test(`${l.ext || ""} ${l.label || ""}`);
+      // Label YouTube "360p (with audio)" itu video muxed (ext .mp4), bukan
+      // audio — cek "with audio" dulu sebelum cocokkan kata "audio" di label,
+      // kalau tidak video bersuara ikut ke-tag audio dan consumer milih
+      // 1080p "video only" (tanpa suara).
+      const label = l.label || "";
+      const ext = l.ext || "";
+      const muxed = /with audio/i.test(label);
+      const audio =
+        !muxed &&
+        (/^\.?(mp3|m4a|opus|ogg|wav)$/i.test(ext) || /audio only|\bmp3\b|\bm4a\b/i.test(label));
       return {
         url: l.url,
         type: audio ? "audio" : "video",
